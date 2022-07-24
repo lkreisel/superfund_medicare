@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<head>
+    <style>
+        body {
+            display: inline-block;
+            font-family: Sans-Serif;
+        }
+
+        path {
+            stroke:white;
+            stroke-width: 1px;
+        }
+
+        table {
+            border-spacing: 0px;
+        }
+
+        th {
+            border: 1px solid black;
+        }
+
+        td {
+            border: 1px solid black;
+        }
+
+        .counties:hover {
+            opacity: 0.5;
+        }
+
+        #mapTitle {
+            font-size: 20px;
+            text-align: center;
+            margin-top: 10px;
+            margin-bottom: 40px;
+            width: 1400px;
+        }
+
+        #explanation {
+            margin-left: 5%;
+            margin-bottom: 40px;
+        }
+
+        #categoryDropdownLabel {
+            font-size: 15px;
+            margin-left: 5%;
+        }
+
+        #categoryDropdown {
+            margin: auto;
+            width: 20%;
+            border: 1px solid black;
+            padding: 5px;
+            font-size: 15px;
+        }
+
+        .tip {
+            line-height: 1;
+            font-weight: bold;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            border-radius: 2px;
+        }
+
+        #table_label {
+            margin-left: 20%;
+            margin-bottom: 10px;
+            font-size: 15px;
+        }
+
+        .table {
+            margin-left: 10%;
+            text-align: center;
+        }
+
+    </style>
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+    <script type="text/javascript" src="./lib/d3-dsv.min.js"></script>
+    <script type="text/javascript" src="./lib/d3-tip.min.js"></script>
+    <script src="https://unpkg.com/topojson-client@3"></script>
+</head>
+<body>
+    <script>
+
+        function createSVG(width, height, margin, id) {
+            return d3.select("body")
+                .append("svg")
+                .attr("id", id)
+                .attr("width", width + margin.left + margin.right)
+                .attr("height", height + margin.top + margin.bottom);
+        }
+
+        function generateDropDowns(dropdown, categories) {
+            dropdown.selectAll("option")
+                .data(categories)
+                .enter()
+                .append("option")
+                .attr("value", function(d) { return d; })
+                .append("text")
+                .text(function(d) { return d; });
+        }
+
+        // enter code to define margin and dimensions for svg
+        let margin = {top: 100, right: 100, bottom: 50, left: 100};
+        let width = 1400 - margin.left - margin.right,
+            height = 700 - margin.top - margin.bottom;
+        d3.select("body")
+            .append("div")
+            .attr("id", "mapTitle")
+            .text("Local Moran Cluster Map for Each Treatment Category Across the Counties")
+        d3.select('body')
+            .append('div')
+            .attr('id', 'explanation')
+            .html(`This map shows Local Moran I county clusters for each treatment category, color coded by type of spatial autocorrelation relationship.<br\>
+                   The data represents the treatment rate, or the % of the county population over the age of 65 who received treatment in the given cateogory, averaged across all hospitals in the county.<br\>
+                   Counties colored gray do not show a significant spatial relationship. Dots represent the locations of Superfund sites.<br\>
+                   Counties that are not gray show clustering activity that is statistically different than what would be expected if treatment rates were randomly spatially distributed.<br\>
+                   You can see the detailed explanation of each relationship by hovering over each colored square box in the legend.`)
+        d3.select("body")
+            .append("label")
+            .attr("id", "categoryDropdownLabel")
+            .attr("for", "categoryDropdown")
+            .text("Treatment Category: ")
+        let dropdown = d3.select("body")
+            .append("select")
+            .attr("id", "categoryDropdown")
+            .attr("name", "categoryDropdown");
+        let svg = createSVG(width, height, margin, 'map');
+        let legends = svg.append('g')
+                         .attr('id', 'legend')
+                         .attr('transform', `translate (${width}, 10)`)
+        let counties = svg.append("g")
+                          .attr("transform", `translate(${margin.left}, ${margin.top + margin.bottom - 50})`);
+        let superfundsLocation = svg.append("g")
+                                    .attr("transform", `translate(${margin.left}, ${margin.top + margin.bottom - 50})`);
+        d3.select('body').append('div').attr('id', 'table_label').text('Proportion of counties within Each Quadrant that have Superfund Sites');
+        let statTable = d3.select("body").append("table").attr('class', 'table').attr('width', '800px');
+        // let color_scale = ['#99D492', '#56B870', '#1D9A6C', '#137177'];
+        // HH=1, LH=2, LL=3, HL=4
+        let color_scale = ['lightgrey', '#d7191c', '#abd9e9', '#2c7bb6', '#fdae61'];
+        let legend_tool_tip = [`NS: Not-significant counties do not show clustering activity that is statistically different than what would be expected if treatment rates were randomly spatially distributed.`,
+                               `HH: High-high quadrant represents counties that have higher treatment rates than would be expected if treatment rates were randomly spatially distributed.`,
+                               `LH: Low-high quadrant represents counties with low values that are surrounded by counties with high values of treatment rates.<br/>These values are more dissimilar than what would be expected by chance.`,
+                               `LL: Low-low quadrant represents counties that have lower treatment rates than would be expected if treatment rates were randomly spatially distributed.`,
+                               `HL: High-low quadrant represents counties with high values that are surrounded by low values of treatment rates.<br/>These values are more dissimilar than what would be expected by chance.`];
+        let quantileScale = d3.scaleQuantile().range(color_scale);
+
+        let usCountiesJson = "./data/counties-10m.json";
+        let superfundSiteJson = "./data/priorities_list_full.json";
+        let superfundSiteDensity = "./data/Superfund_density.csv";
+        let spatialData = "./data/spatial_analysis.csv";
+        let localMoranStats = "./data/local-moran-summary-statistics.csv"
+
+        let countiesJson = d3.json(usCountiesJson, d => d);
+        let superfundSiteListJson = d3.json(superfundSiteJson, d => d);
+        let siteDensity = d3.csv(superfundSiteDensity, d => d);
+        let spatialSignificance = d3.csv(spatialData, d => d)
+        let localMoranStatsSummary = d3.csv(localMoranStats, d => d);
+        let densityMap;
+        let legendTooltip = d3.tip()
+            .attr("id", "legendTooltip")
+            .attr("class", "tip")
+            .offset([-10, 0])
+            .html((d, i) => `<strong>${legend_tool_tip[i]}</strong>`);
+        let tooltip = d3.tip()
+            .attr("id", "tooltip")
+            .attr("class", "tip")
+            .offset([-10, 0])
+            .html(d => {
+                let countyID = parseFloat(d.id);
+                let countyName = d.properties.name;
+                let count = densityMap.has(countyID) ? parseInt(densityMap.get(countyID).count) : 0;
+                let densityScore = densityMap.has(countyID) ? Math.round((densityMap.get(countyID).sum_site_score) * 100) / 100 : 0.0;
+                let avgScore = densityMap.has(countyID) ? Math.round((densityMap.get(countyID).avg_site_score) * 100) / 100 : 0.0;
+                return `<strong>County:</strong> ${countyName} <br/>
+                        <strong>Density Score:</strong> ${densityScore} <br/>
+                        <strong>Avg Superfund Score:</strong> ${avgScore} <br/>
+                        <strong>Superfund Site Count:</strong> ${count} <br/>`;
+            });
+        svg.call(legendTooltip);
+        svg.call(tooltip);
+
+        let projection = d3.geoAlbersUsa().scale(1300);
+        let path = d3.geoPath().projection(projection);
+
+        Promise.all([
+            // enter code to read files
+            countiesJson, siteDensity, spatialSignificance, superfundSiteListJson, localMoranStatsSummary
+        ]).then(values => {
+            // enter code to call ready() with required arguments
+            let [us, density, significance, superfund, stats] = values
+            let superfundCount = 1344;
+            let latitude = superfund['latitude'];
+            let longitude = superfund['longitude'];
+            let coordinate = [];
+            for (let i = 0; i < superfundCount; i++) {
+                let projectedCoordinate = projection([longitude[i], latitude[i]]);
+                if (projectedCoordinate != null)
+                    coordinate.push(projectedCoordinate);
+            }
+            ready('', us, density, significance, coordinate, stats);
+        });
+
+        function ready(error, us, density, significance, coordinate, stats) {
+            let categories = ["All","Musculoskeletal","Circulatory","Digestive and excretory","Endocrine","Exocrine","Nervous","Renal","Respiratory","Cancer","Immune","Reproductive"]
+            let significanceMap = new Map(significance.map(k => [parseFloat(k.FIPS), k]));
+            let densityScale = density.map(k => k.sum_site_score);
+            let statsMap = new Map(stats.map(k => [k.category, k]));
+            densityMap = new Map(density.map(k => [parseFloat(k.FIPS_code), k]));
+            quantileScale.domain(densityScale)
+            generateDropDowns(dropdown, categories);
+            d3.select("#categoryDropdown")
+                .on("change", function() {
+                    let selectedCategory = d3.select(this).property("value");
+                    generateMap(us, densityScale, significanceMap, selectedCategory, coordinate);
+                    generateStatTable(selectedCategory, statsMap);
+                })
+            generateMap(us, densityScale, significanceMap, categories[0], coordinate);
+            generateStatTable(categories[0], statsMap);
+        }
+
+        function generateMap(us, densityScale, significanceMap, selectedCategory, coordinate){
+            counties.selectAll("path").remove();
+            superfundsLocation.selectAll("circle").remove();
+            legends.selectAll("rect").remove();
+            legends.selectAll("text").remove();
+            let county_objects = topojson.feature(us, us.objects.counties).features
+            // let color_scales = quantileScale.quantiles();
+            // let color_legend = [
+            //                         `< ${Math.min(...densityScale).toFixed(2)}`,
+            //                         `${Math.min(...densityScale).toFixed(2)} to ${color_scales[0].toFixed(2)}`,
+            //                         `${color_scales[0].toFixed(2)} to ${color_scales[1].toFixed(2)}`,
+            //                         `${color_scales[1].toFixed(2)} to ${color_scales[2].toFixed(2)}`,
+            //                         `${color_scales[2].toFixed(2)} <`
+            //                    ]
+            let color_legend = ['NS', 'HH', 'LH', 'LL', 'HL']
+            superfundsLocation.selectAll('circle')
+                .data(coordinate)
+                .enter()
+                .append('circle')
+                .attr("cx", function (d) { return d[0]; })
+                .attr("cy", function (d) { return d[1]; })
+                .attr("r", "1.25px")
+                .attr("fill", "#137177");
+
+            counties.selectAll('path')
+                .data(county_objects)
+                .enter()
+                .append('path')
+                .attr('d', path)
+                .attr("class", "counties")
+                .attr('fill', function(d) {
+                    let countyID = parseFloat(d.id);
+                    if (significanceMap.has(countyID)) {
+                        return color_scale[parseInt(significanceMap.get(countyID)[selectedCategory])];
+                    } else {
+                        return 'lightgrey';
+                    }
+                })
+                .on("mouseover", tooltip.show)
+                .on('mouseout', tooltip.hide);
+
+            let x_legend = 0;
+            let y_legends = [150, 125, 100, 75, 50]
+            legends.selectAll('rect')
+                .data(color_scale).enter()
+                .append('rect')
+                .attr('fill', d => d)
+                .attr('x', x_legend - 80)
+                .attr('y', (d, i) => y_legends[i])
+                .attr('width', 20)
+                .attr('height', 20)
+                .on("mouseover", legendTooltip.show)
+                .on('mouseout', legendTooltip.hide);
+            legends.selectAll('text')
+                   .data(color_scale).enter()
+                   .append('text')
+                   .attr('x', x_legend - 50)
+                   .attr('y', (d, i) => y_legends[i] + 14)
+                   .style('font_size', '90%')
+                   .text((d, i) => color_legend[i]);
+            legends.append('circle')
+                .attr('fill', '#137177')
+                .attr('stroke', 'black')
+                .attr('cx', x_legend - 70)
+                .attr('cy', 35)
+                .attr('r', 5);
+            legends.append('text')
+                .attr('x', x_legend - 50)
+                .attr('y', 39)
+                .style('font_size', '90%')
+                .text('Superfund site');
+        }
+
+        function generateStatTable(selectedCategory, statsMap) {
+            statTable.remove();
+            statTable = d3.select("body").append("table").attr('class', 'table').attr('width', '800px');
+            let selectedStatMap = statsMap.get(selectedCategory);
+            let headerKeys = Object.keys(selectedStatMap);
+            let tableHeaderLabel = ['NS', 'HH', 'LH', 'LL', 'HL'];
+            let headers = ['Category'];
+            let statData = [selectedCategory];
+            let header = statTable.append("thead");
+            let body = statTable.append("tbody");
+
+            for (let i = 0; i < headerKeys.length - 1; i++) {
+                headers.push(tableHeaderLabel[i]);
+                statData.push(selectedStatMap[i]);
+            }
+
+            header.append('tr')
+                  .selectAll('th')
+                  .data(headers).enter()
+                  .append('th')
+                  .text(h => h);
+
+            let rows = body.selectAll('tr')
+                           .data([statData])
+                           .enter()
+                           .append('tr');
+
+            rows.selectAll('td')
+                .data(r => r)
+                .enter()
+                .append('td')
+                .text(d => {
+                    if (!isNaN(d))
+                        d = parseFloat(d).toFixed(3);
+                    return d;
+                });
+        }
+
+    </script>
+</body>
